@@ -28,3 +28,6 @@ lab2life/
 cd lab2life-backend
 pip install -r requirements.txt
 uvicorn main:app --reload
+
+## 📊 Dashboard Preview
+![Dashboard](screenshots/dashboard.png)
