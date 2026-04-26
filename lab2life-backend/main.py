@@ -597,7 +597,26 @@ async def upload_report(
         # ✅ AI ANALYSIS
         # =========================================
         analysis = generate_report_analysis(pdf_text, language)
+        # ✅ SAVE TO MYSQL (NEW - FOR ANALYTICS)
+        from sqlalchemy import create_engine, text
 
+        mysql_engine = create_engine("mysql+pymysql://root:Smadhu%40000@localhost:3306/health_db")
+
+        try:
+            with mysql_engine.connect() as conn:
+                conn.execute(text("""
+                    INSERT INTO medical_reports 
+                    (patient_name, age, disease, report_date, summary)
+                    VALUES (:name, :age, :disease, CURDATE(), :summary)
+                """), {
+                    "name": current_patient.full_name if current_patient else "Guest",
+                    "age": current_patient.age if current_patient else 0,
+                    "disease": "General Analysis",  # You can improve later
+                    "summary": analysis["summary"]
+                })
+                conn.commit()
+        except Exception as e:
+            print("MySQL Save Error:", e)
         # =========================================
         # ✅ SAVE ONLY IF LOGGED IN
         # =========================================
@@ -686,7 +705,117 @@ def root():
         "message": "Lab2Life API is running successfully with public upload, protected Ask Doctor, and Razorpay order creation."
     }
 
+@app.get("/analytics/all-reports")
+def get_all_reports():
+    from sqlalchemy import create_engine, text
 
+    engine = create_engine("mysql+pymysql://root:Smadhu%40000@localhost:3306/health_db")
+
+    with engine.connect() as conn:
+        result = conn.execute(text("SELECT * FROM medical_reports"))
+        data = [dict(row._mapping) for row in result]
+
+    return {"data": data}
+
+@app.get("/analytics/report-count")
+def report_count():
+    from sqlalchemy import create_engine, text
+
+    engine = create_engine("mysql+pymysql://root:Smadhu%40000@localhost:3306/health_db")
+
+    with engine.connect() as conn:
+        result = conn.execute(text("SELECT COUNT(*) as total FROM medical_reports"))
+        count = result.fetchone()._mapping["total"]
+
+    return {"total_reports": count}
+
+@app.get("/analytics/top-diseases")
+def top_diseases():
+    from sqlalchemy import create_engine, text
+
+    engine = create_engine("mysql+pymysql://root:Smadhu%40000@localhost:3306/health_db")
+
+    with engine.connect() as conn:
+        result = conn.execute(text("""
+            SELECT disease, COUNT(*) as count
+            FROM medical_reports
+            GROUP BY disease
+            ORDER BY count DESC
+            LIMIT 5
+        """))
+        data = [dict(row._mapping) for row in result]
+
+    return {"top_diseases": data}
+
+@app.get("/analytics/avg-age")
+def avg_age():
+    from sqlalchemy import create_engine, text
+
+    engine = create_engine("mysql+pymysql://root:Smadhu%40000@localhost:3306/health_db")
+
+    with engine.connect() as conn:
+        result = conn.execute(text("SELECT AVG(age) as avg_age FROM medical_reports"))
+        avg = result.fetchone()._mapping["avg_age"]
+
+    return {"average_age": avg}
+
+@app.get("/analytics/ask")
+def ask_ai(question: str):
+    from sqlalchemy import create_engine, text
+
+    engine = create_engine("mysql+pymysql://root:Smadhu%40000@localhost:3306/health_db")
+
+    # 🧠 Prompt to convert question → SQL
+    prompt = f"""
+    Convert the following question into SQL query.
+
+    Table name: medical_reports
+    Columns: id, patient_name, age, disease, report_date, summary
+
+    Only return SQL query. No explanation.
+
+    Question: {question}
+    """
+
+    try:
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+        )
+
+        import re
+
+        raw_output = response.choices[0].message.content.strip()
+
+        # 🔥 Remove markdown (```sql ... ```)
+        sql_query = re.sub(r"```sql|```", "", raw_output).strip()
+
+        # 🔥 Extract only SELECT query
+        match = re.search(r"(SELECT .*?;)", sql_query, re.IGNORECASE | re.DOTALL)
+
+        if match:
+            sql_query = match.group(1)
+        else:
+            return {"error": "Could not generate valid SQL"}
+
+            # ⚠️ Safety check (basic)
+            if not sql_query.lower().startswith("select"):
+                return {"error": "Only SELECT queries allowed"}
+
+        # Execute SQL
+        with engine.connect() as conn:
+            result = conn.execute(text(sql_query))
+            data = [dict(row._mapping) for row in result]
+
+        return {
+            "question": question,
+            "sql": sql_query,
+            "result": data
+        }
+
+    except Exception as e:
+        return {"error": str(e)}
 # -------------------- RUN APP --------------------
 if __name__ == "__main__":
     import uvicorn
